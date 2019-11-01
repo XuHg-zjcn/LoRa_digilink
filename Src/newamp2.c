@@ -162,10 +162,6 @@ void n2_rate_K_mbest_encode(int *indexes, float *x, float *xq, int ndim, int VQ_
   //indexes[1]: legacy from newamp1
   indexes[0] = n1; indexes[1] = n1;
 	//f_write(&fout, codebook1, sizeof(float)*41*500, (UINT*)&size_writed);
-		if(size_writed == sizeof(float)*41*500)
-			HAL_GPIO_WritePin(D3_GPIO_Port, D3_Pin, GPIO_PIN_RESET);
-		else
-			HAL_GPIO_WritePin(D3_GPIO_Port, D3_Pin, GPIO_PIN_SET);
 }
 
 

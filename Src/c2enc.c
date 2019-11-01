@@ -71,10 +71,8 @@ void c2enc(void)
 	      codec2_encode(codec2, bits, buf);//size_readed==nsam*sizeof(short) && size_readed!=0 && buf[0]!=0 && buf[0]!=a
 			  //printf("0x%02x%02x%02x\r\n",bits[0],bits[1],bits[2]);
 		    //printf("%d,%d,rd=%d\r\n",buf[0],buf[1],size_readed);
-		    HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_RESET);
         f_write(&fout, bits, nbyte*sizeof(char), (UINT*)&size_writed);//write encoded data
 		    f_read(&fin, buf, nsam*sizeof(short), (UINT*)&size_readed);//read input data
-			  HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_SET);
 		}
 		
 	  /*for(int i=0;i<3;i++) {
@@ -93,7 +91,7 @@ void c2enc(void)
 
     f_close(&fin);
 		f_close(&fout);
-    //codec2_destroy(codec2);
+    codec2_destroy(codec2);
 
     vPortFree(buf);
     vPortFree(bits);

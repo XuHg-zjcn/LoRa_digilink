@@ -60,10 +60,13 @@
 #include "defines.h"
 //#include "codec2.h"
 #include "c2enc.h"
+#include "codec2.h"
+#include "myadc.h"
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
 
 I2C_HandleTypeDef hi2c2;
 
@@ -77,17 +80,22 @@ DMA_HandleTypeDef hdma_sdio_tx;
 
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim5;
 TIM_HandleTypeDef htim11;
 
 UART_HandleTypeDef huart1;
 
 osThreadId defaultTaskHandle;
+osThreadId codec2Handle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 //FIL  fin,fout;
+volatile uint8_t codec2_flag=1;
+uint8_t encoding_flag;
 /* USER CODE END PV */
+
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -101,7 +109,10 @@ static void MX_I2C2_Init(void);
 static void MX_RNG_Init(void);
 static void MX_TIM5_Init(void);
 static void MX_TIM11_Init(void);
+static void MX_TIM3_Init(void);
 void StartDefaultTask(void const * argument);
+void StartTask02(void const * argument);
+static void MX_NVIC_Init(void);
 
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
                                 
@@ -162,6 +173,10 @@ int main(void)
   MX_RNG_Init();
   MX_TIM5_Init();
   MX_TIM11_Init();
+  MX_TIM3_Init();
+
+  /* Initialize interrupts */
+  MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -180,8 +195,12 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 3072);
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 512);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+
+  /* definition and creation of codec2 */
+  osThreadDef(codec2, StartTask02, osPriorityLow, 0, 3072);
+  codec2Handle = osThreadCreate(osThread(codec2), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -277,6 +296,17 @@ void SystemClock_Config(void)
   HAL_NVIC_SetPriority(SysTick_IRQn, 15, 0);
 }
 
+/**
+  * @brief NVIC Configuration.
+  * @retval None
+  */
+static void MX_NVIC_Init(void)
+{
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+}
+
 /* ADC1 init function */
 static void MX_ADC1_Init(void)
 {
@@ -291,12 +321,13 @@ static void MX_ADC1_Init(void)
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DiscontinuousConvMode = ENABLE;
+  hadc1.Init.NbrOfDiscConversion = 1;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 3;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -305,7 +336,7 @@ static void MX_ADC1_Init(void)
 
     /**Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
     */
-  sConfig.Channel = ADC_CHANNEL_10;
+  sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_112CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -313,35 +344,36 @@ static void MX_ADC1_Init(void)
     _Error_Handler(__FILE__, __LINE__);
   }
 
-    /**Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
-    */
-  sConfig.Channel = ADC_CHANNEL_11;
-  sConfig.Rank = 2;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    _Error_Handler(__FILE__, __LINE__);
-  }
-
-    /**Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time. 
-    */
-  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
-  sConfig.Rank = 3;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    _Error_Handler(__FILE__, __LINE__);
-  }
-
     /**Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
     */
-  sConfigInjected.InjectedChannel = ADC_CHANNEL_4;
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_10;
   sConfigInjected.InjectedRank = 1;
-  sConfigInjected.InjectedNbrOfConversion = 1;
+  sConfigInjected.InjectedNbrOfConversion = 3;
   sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_112CYCLES;
   sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_NONE;
   sConfigInjected.ExternalTrigInjecConv = ADC_INJECTED_SOFTWARE_START;
   sConfigInjected.AutoInjectedConv = DISABLE;
   sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
   sConfigInjected.InjectedOffset = 0;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+    /**Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+    */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_11;
+  sConfigInjected.InjectedRank = 2;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+    /**Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time 
+    */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_TEMPSENSOR;
+  sConfigInjected.InjectedRank = 3;
   if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
   {
     _Error_Handler(__FILE__, __LINE__);
@@ -462,6 +494,38 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 10;
   if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+}
+
+/* TIM3 init function */
+static void MX_TIM3_Init(void)
+{
+
+  TIM_ClockConfigTypeDef sClockSourceConfig;
+  TIM_MasterConfigTypeDef sMasterConfig;
+
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 10500;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
   {
     _Error_Handler(__FILE__, __LINE__);
   }
@@ -622,11 +686,14 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOA, D2_Pin|D3_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, F_CS_Pin|GPIO_PIN_6|NRF_CS_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(F_CS_GPIO_Port, F_CS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6|NRF_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : K1_Pin K0_Pin */
   GPIO_InitStruct.Pin = K1_Pin|K0_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
@@ -637,17 +704,18 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : F_CS_Pin PB6 NRF_CS_Pin */
+  /*Configure GPIO pin : F_CS_Pin */
+  GPIO_InitStruct.Pin = F_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(F_CS_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB6 NRF_CS_Pin */
   GPIO_InitStruct.Pin = GPIO_PIN_6|NRF_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-	
-	GPIO_InitStruct.Pin = F_CS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : NRF_IRQ_Pin */
@@ -669,7 +737,7 @@ void StartDefaultTask(void const * argument)
   MX_FATFS_Init();
 
   /* init code for USB_DEVICE */
-  MX_USB_DEVICE_Init();
+  //MX_USB_DEVICE_Init();
 
   /* USER CODE BEGIN 5 */
 	long size;
@@ -680,13 +748,14 @@ void StartDefaultTask(void const * argument)
 	//FIL fin;
 	//short *buf;
 	uint8_t byte0=0;
-	
+	//uint16_t *voice_data=(uint16_t*)pvPortMalloc(640*sizeof(uint16_t));
 	MX_SDIO_SD_Init();
 	BSP_SD_Init();
-  printf("%d\r\n",xPortGetFreeHeapSize());
 	FRESULT res;
 	f_mount(&SDFatFS, (TCHAR const*)SDPath, 1);
-	//f_open(&SDFile, "0:/in.raw", FA_READ);
+	//f_open(&SDFile, "0:/record.raw", FA_WRITE | FA_CREATE_ALWAYS);
+	//HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_SET);
+	//HAL_GPIO_WritePin(D3_GPIO_Port, D3_Pin, GPIO_PIN_SET);
 	osDelay(3000);
 	//HAL_GPIO_WritePin(F_CS_GPIO_Port, F_CS_Pin, GPIO_PIN_RESET);
 	/*erase();
@@ -748,10 +817,20 @@ void StartDefaultTask(void const * argument)
 		printf("res1==FR_OK");
 	}*/
 	__HAL_TIM_SetCompare(&htim5, TIM_CHANNEL_2, 500);//Red Light
-	//TickType_t t0=xTaskGetTickCount();
-	c2enc();
+	//HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_RESET);
+	//HAL_GPIO_WritePin(D3_GPIO_Port, D3_Pin, GPIO_PIN_RESET);
+	osSignalSet(codec2Handle, 0x0004);
+	//HAL_TIM_Base_Start(&htim3);
+	//HAL_ADC_Start_DMA(&hadc1, (uint32_t*)voice_data, 320*2);
+	osDelay(1000);
+	//f_write(&SDFile, voice_data, 640*sizeof(uint16_t), (UINT*)&size_writed);//write encoded data
+	//HAL_GPIO_WritePin(D3_GPIO_Port, D3_Pin, GPIO_PIN_RESET);
+	//f_close(&SDFile);
+	codec2_flag=0;
+	/*//TickType_t t0=xTaskGetTickCount();
+	//c2enc();
 	//TickType_t t1=xTaskGetTickCount();
-  /*buf = (short*)pvPortMalloc(320*sizeof(short));
+  buf = (short*)pvPortMalloc(320*sizeof(short));
 	f_open(&fin, "0:/in.raw", FA_READ);
 	f_read(&fin, buf, 320*sizeof(short), (UINT*)&size_readed);
 		while(size_readed==320*sizeof(short)){
@@ -764,6 +843,7 @@ void StartDefaultTask(void const * argument)
 		}*/
 	__HAL_TIM_SetCompare(&htim5, TIM_CHANNEL_2, 0);//Green Light
 	__HAL_TIM_SetCompare(&htim5, TIM_CHANNEL_3, 500);
+	osThreadSuspend(defaultTaskHandle);
 	//HAL_RTC_GetTime(&hrtc,&sTime1,RTC_FORMAT_BIN);
   for(;;)
   {
@@ -779,14 +859,14 @@ void StartDefaultTask(void const * argument)
 				p_m=1;
 			}
 		}*/
-		//HAL_RTC_GetTime(&hrtc,&sTime,RTC_FORMAT_BIN);
+		/*//HAL_RTC_GetTime(&hrtc,&sTime,RTC_FORMAT_BIN);
 		//HAL_RTC_GetDate(&hrtc,&sDate,RTC_FORMAT_BIN);
 		//printf("%02d-%2d-%2d,%2d:%02d:%02d.%03d\n",sDate.Year,sDate.Month,sDate.Date,
 		//                                          sTime.Hours,sTime.Minutes,sTime.Seconds,sTime.SubSeconds);
 		//printf("%2d:%02d:%02d - %2d:%02d:%02d",sTime0.Hours,sTime0.Minutes,sTime0.Seconds,sTime1.Hours,sTime1.Minutes,sTime1.Seconds);
 		//printf("%dms\r\n",t1-t0);
 		//printf("123");
-		//CDC_Receive_FS();
+		//CDC_Receive_FS();*/
 		/*__HAL_TIM_SetCompare(&htim5, TIM_CHANNEL_2, t);
 		__HAL_TIM_SetCompare(&htim5, TIM_CHANNEL_3, 1000-t);
 		__HAL_TIM_SetCompare(&htim5, TIM_CHANNEL_4, 0);*/
@@ -794,6 +874,71 @@ void StartDefaultTask(void const * argument)
     osDelay(300);
   }
   /* USER CODE END 5 */ 
+}
+
+/* StartTask02 function */
+void StartTask02(void const * argument)
+{
+  /* USER CODE BEGIN StartTask02 */
+	uint16_t *voice_data;
+	short *buf;
+  unsigned char *bits;
+	uint16_t nsam, nbit, nbyte;
+  void *codec2;
+	uint32_t size_writed;
+	FIL fout;
+	TickType_t t0,t1;
+	codec2 = codec2_create(CODEC2_MODE_450);
+	nsam = 320;//codec2_samples_per_frame(codec2);
+	nbit = 18;//codec2_bits_per_frame(codec2);
+	nbyte = (nbit + 7) / 8;
+	//printf("nsam=%d,nbit=%d\r\n",nsam,nbit);
+	osSignalWait(0x0004, osWaitForever);//Start
+	bits = (unsigned char*)pvPortMalloc(nbyte*sizeof(char));
+	voice_data = (uint16_t*)pvPortMalloc(nsam*2*sizeof(uint16_t));
+	buf = (short*)pvPortMalloc(nsam*sizeof(short));
+	f_open(&fout, "0:/voice.raw", FA_WRITE | FA_CREATE_ALWAYS);
+	HAL_TIM_Base_Start(&htim3);
+	codec2_flag=1;
+	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)voice_data, nsam*2);
+	/* Infinite loop */
+  for(;;)
+  {
+		if(codec2_flag)
+		{
+			//osThreadSuspend(codec2Handle);
+			osSignalWait(0x0001, 200);//HalfCplt
+			HAL_GPIO_TogglePin(D3_GPIO_Port, D3_Pin);
+			//codec2_encode(codec2, bits, buf);
+			f_write(&fout, voice_data, nsam*sizeof(uint16_t), (UINT*)&size_writed);
+			if(size_writed == nsam*sizeof(uint16_t))
+				HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_RESET);
+			else
+				HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_SET);
+			//osThreadSuspend(codec2Handle);
+			osSignalWait(0x0002, 200);//Cplt
+			HAL_ADC_Start_DMA(&hadc1, (uint32_t*)voice_data, nsam*2);
+			//codec2_encode(codec2, bits, buf);
+			f_write(&fout, voice_data+nsam, nsam*sizeof(uint16_t), (UINT*)&size_writed);
+			if(size_writed == nsam*sizeof(uint16_t))
+				HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_RESET);
+			else
+				HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_SET);
+			//codec2_flag=0;
+		}
+		else
+		{
+			f_close(&fout);
+			HAL_GPIO_WritePin(D2_GPIO_Port, D2_Pin, GPIO_PIN_SET);
+			//osThreadSuspend(codec2Handle);
+			osSignalWait(0x0004, osWaitForever);//Start
+			f_open(&fout, "0:/voice.raw", FA_WRITE | FA_CREATE_ALWAYS);
+			codec2_flag=1;
+			HAL_ADC_Start_DMA(&hadc1, (uint32_t*)voice_data, nsam*2);
+		}
+    osDelay(1);
+  }
+  /* USER CODE END StartTask02 */
 }
 
 /**
